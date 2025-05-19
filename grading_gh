@@ -1,0 +1,242 @@
+To set up an automated system for grading contributions and logins on GitHub or similar platforms, you can leverage existing tools, APIs, and custom scripts to track user activity and assign scores based on predefined criteria. Below, I outline a solution that uses GitHub’s API to monitor contributions (e.g., commits, pull requests, issues) and logins (via user activity or events), with a Python script to automate the grading process. This approach can be adapted to other platforms like GitLab or Bitbucket with their respective APIs.
+
+### Solution Overview
+1. **Track Contributions**: Use GitHub’s API to fetch data on commits, pull requests, issues, and other contributions.
+2. **Track Logins**: Monitor user activity (e.g., push events, issue comments) as a proxy for logins, since GitHub doesn’t directly expose login events.
+3. **Grading System**: Define a scoring rubric for contributions (e.g., 5 points per commit, 10 points per merged pull request) and logins (e.g., 2 points per active day).
+4. **Automation**: Run a Python script periodically (e.g., via GitHub Actions or a cron job) to collect data, calculate scores, and store results.
+5. **Output**: Generate a report or update a dashboard with member grades.
+
+### Implementation
+
+#### Step 1: Define the Grading Rubric
+Here’s an example rubric for grading:
+- **Commits**: 5 points per commit
+- **Pull Requests (PRs)**: 10 points per merged PR, 3 points per open PR
+- **Issues Created**: 4 points per issue opened
+- **Issue Comments**: 2 points per comment
+- **Logins (Active Days)**: 2 points per day with any activity (e.g., push, comment, or PR activity)
+
+You can adjust these weights based on your team’s priorities.
+
+#### Step 2: Use GitHub API for Data Collection
+GitHub’s REST API provides endpoints to fetch user contributions and activity:
+- **Commits**: `/repos/{owner}/{repo}/commits` (filter by author)
+- **Pull Requests**: `/repos/{owner}/{repo}/pulls` (filter by user and state)
+- **Issues**: `/repos/{owner}/{repo}/issues` (filter by creator or commenter)
+- **User Events**: `/users/{username}/events` (to infer login/activity days)
+
+You’ll need a GitHub Personal Access Token (PAT) with `repo` and `user` scopes for authentication.
+
+#### Step 3: Python Script for Grading
+Below is a Python script that fetches contribution data, tracks activity for logins, and calculates grades based on the rubric. It uses the `requests` library to interact with the GitHub API and outputs results to a CSV file.
+
+```python
+import requests
+import json
+from datetime import datetime, timedelta
+import csv
+import os
+
+# Configuration
+GITHUB_TOKEN = os.getenv('GITHUB_TOKEN')  # Set in environment variables
+REPO = 'owner/repo'  # Replace with your repo (e.g., 'octocat/hello-world')
+DAYS_TO_CHECK = 30  # Look back 30 days
+OUTPUT_FILE = 'contribution_grades.csv'
+
+# GitHub API headers
+headers = {
+    'Authorization': f'token {GITHUB_TOKEN}',
+    'Accept': 'application/vnd.github.v3+json'
+}
+
+# Grading rubric
+RUBRIC = {
+    'commit': 5,
+    'pr_merged': 10,
+    'pr_open': 3,
+    'issue_opened': 4,
+    'issue_comment': 2,
+    'active_day': 2
+}
+
+def get_users_in_repo():
+    """Fetch contributors to the repository."""
+    url = f'https://api.github.com/repos/{REPO}/contributors'
+    response = requests.get(url, headers=headers)
+    response.raise_for_status()
+    return [user['login'] for user in response.json()]
+
+def get_user_commits(username, since):
+    """Fetch commits by a user since a given date."""
+    url = f'https://api.github.com/repos/{REPO}/commits?author={username}&since={since}'
+    response = requests.get(url, headers=headers)
+    response.raise_for_status()
+    return len(response.json())
+
+def get_user_prs(username, since):
+    """Fetch pull requests by a user since a given date."""
+    url = f'https://api.github.com/repos/{REPO}/pulls?creator={username}&state=all'
+    response = requests.get(url, headers=headers)
+    response.raise_for_status()
+    prs = response.json()
+    merged = sum(1 for pr in prs if pr['merged_at'] and datetime.strptime(pr['merged_at'], '%Y-%m-%dT%H:%M:%SZ') >= since)
+    open_prs = sum(1 for pr in prs if pr['state'] == 'open' or (pr['merged_at'] is None and datetime.strptime(pr['created_at'], '%Y-%m-%dT%H:%M:%SZ') >= since))
+    return merged, open_prs
+
+def get_user_issues(username, since):
+    """Fetch issues opened and commented on by a user since a given date."""
+    # Issues opened
+    url = f'https://api.github.com/repos/{REPO}/issues?creator={username}&since={since}'
+    response = requests.get(url, headers=headers)
+    response.raise_for_status()
+    issues_opened = len([issue for issue in response.json() if not issue.get('pull_request')])  # Exclude PRs
+
+    # Issue comments
+    url = f'https://api.github.com/repos/{REPO}/issues/comments?since={since}'
+    response = requests.get(url, headers=headers)
+    response.raise_for_status()
+    comments = len([comment for comment in response.json() if comment['user']['login'] == username])
+    return issues_opened, comments
+
+def get_active_days(username, since):
+    """Infer active days from user events since a given date."""
+    url = f'https://api.github.com/users/{username}/events'
+    response = requests.get(url, headers=headers)
+    response.raise_for_status()
+    events = response.json()
+    active_dates = set()
+    for event in events:
+        created_at = datetime.strptime(event['created_at'], '%Y-%m-%dT%H:%M:%SZ')
+        if created_at >= since:
+            active_dates.add(created_at.date())
+    return len(active_dates)
+
+def calculate_grade(contributions):
+    """Calculate total grade based on contributions."""
+    return (
+        contributions['commits'] * RUBRIC['commit'] +
+        contributions['prs_merged'] * RUBRIC['pr_merged'] +
+        contributions['prs_open'] * RUBRIC['pr_open'] +
+        contributions['issues_opened'] * RUBRIC['issue_opened'] +
+        contributions['issue_comments'] * RUBRIC['issue_comment'] +
+        contributions['active_days'] * RUBRIC['active_day']
+    )
+
+def main():
+    since = (datetime.now() - timedelta(days=DAYS_TO_CHECK)).isoformat()
+    users = get_users_in_repo()
+    grades = []
+
+    for username in users:
+        try:
+            commits = get_user_commits(username, since)
+            prs_merged, prs_open = get_user_prs(username, datetime.strptime(since, '%Y-%m-%dT%H:%M:%S.%f'))
+            issues_opened, issue_comments = get_user_issues(username, since)
+            active_days = get_active_days(username, datetime.strptime(since, '%Y-%m-%dT%H:%M:%S.%f'))
+
+            contributions = {
+                'commits': commits,
+                'prs_merged': prs_merged,
+                'prs_open': prs_open,
+                'issues_opened': issues_opened,
+                'issue_comments': issue_comments,
+                'active_days': active_days
+            }
+            grade = calculate_grade(contributions)
+            grades.append({
+                'username': username,
+                'grade': grade,
+                'contributions': contributions
+            })
+        except Exception as e:
+            print(f"Error processing {username}: {e}")
+
+    # Write to CSV
+    with open(OUTPUT_FILE, 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=['username', 'grade', 'commits', 'prs_merged', 'prs_open', 'issues_opened', 'issue_comments', 'active_days'])
+        writer.writeheader()
+        for grade in grades:
+            row = {'username': grade['username'], 'grade': grade['grade']}
+            row.update(grade['contributions'])
+            writer.writerow(row)
+
+if __name__ == '__main__':
+    main()
+```
+
+#### Step 4: Set Up Automation
+To run this script automatically:
+1. **GitHub Actions**:
+   - Create a `.github/workflows/grade-contributions.yml` file in your repository.
+   - Schedule the script to run daily or weekly using a cron schedule.
+   - Example workflow:
+
+```yaml
+name: Grade Contributions
+on:
+  schedule:
+    - cron: '0 0 * * *'  # Run daily at midnight UTC
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  grade:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+      - name: Install dependencies
+        run: pip install requests
+      - name: Run grading script
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python github_contribution_grader.py
+      - name: Upload results
+        uses: actions/upload-artifact@v3
+        with:
+          name: contribution-grades
+          path: contribution_grades.csv
+```
+
+2. **Store GITHUB_TOKEN**:
+   - Generate a Personal Access Token in GitHub (Settings > Developer settings > Personal access tokens).
+   - Add it as a secret in your repository (Settings > Secrets and variables > Actions > New repository secret).
+
+#### Step 5: Output and Visualization
+- The script generates a `contribution_grades.csv` file with columns for username, total grade, and contribution details.
+- You can extend the script to:
+  - Push results to a Google Sheet using `gspread`.
+  - Create a dashboard using a tool like Streamlit or Dash to visualize grades.
+  - Post summaries to a team Slack or Discord channel using webhooks.
+
+#### Step 6: Adapting to Other Platforms
+For platforms like GitLab or Bitbucket:
+- Use their respective APIs (e.g., GitLab’s `/projects/{id}/commits` or Bitbucket’s `/repositories/{workspace}/{repo}/commits`).
+- Modify the API endpoints and authentication in the script.
+- The logic for grading and tracking activity remains similar.
+
+### Notes and Considerations
+- **Login Tracking**: GitHub’s API doesn’t directly provide login events. The script uses user events (e.g., push, comment) to infer active days. For precise login tracking, you’d need a custom authentication system or a platform that exposes login data.
+- **Rate Limits**: GitHub’s API has rate limits (5,000 requests/hour for authenticated users). For large teams or repositories, paginate API responses and cache results.
+- **Privacy**: Ensure team members are aware that their contributions are being tracked and graded. Anonymize data if needed.
+- **Scalability**: For multiple repositories, loop through a list of repos in the script.
+- **Existing Tools**: Tools like GatorGrader or Submitty offer automated grading for educational contexts but are less focused on login tracking. You could integrate their checks for code quality into the rubric.[](https://github.com/GatorEducator/gatorgrader)[](https://github.com/Submitty/Submitty)
+
+### Example Output
+The `contribution_grades.csv` might look like:
+```
+username,grade,commits,prs_merged,prs_open,issues_opened,issue_comments,active_days
+alice,45,5,1,2,3,4,5
+bob,22,3,0,1,1,2,3
+```
+
+### Next Steps
+- Test the script on a small repository to verify API calls and grading logic.
+- Adjust the rubric based on team feedback.
+- Set up the GitHub Actions workflow and monitor the output CSV.
+- If you need a dashboard, I can provide a follow-up script for visualization using Streamlit.
+
+If you want to extend this system (e.g., add visualization, support other platforms, or integrate with an LMS), let me know, and I can provide additional artifacts or guidance!
