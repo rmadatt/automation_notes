@@ -1,0 +1,197 @@
+To automate grading and categorizing responses from Google Forms, you can leverage Google Forms’ built-in quiz features for automatic grading, Google Sheets for data storage, and Google Apps Script for advanced categorization and processing. Below, I outline a step-by-step solution that includes setting up a self-grading quiz, exporting responses to Google Sheets, and using a script to categorize responses based on predefined criteria. This approach is flexible and can be adapted to various grading and categorization needs.
+
+### Solution Overview
+1. **Set Up a Google Form Quiz**: Create a quiz with auto-gradable question types (e.g., multiple-choice, checkboxes, dropdowns) and define an answer key.
+2. **Link to Google Sheets**: Automatically export form responses to a Google Sheet for analysis and categorization.
+3. **Automate Grading**: Use Google Forms’ quiz feature for automatic scoring of supported question types and manual grading for others (e.g., short answer or paragraph).
+4. **Automate Categorization**: Write a Google Apps Script to categorize responses based on scores or specific answers (e.g., “Pass/Fail” or custom categories like “Beginner/Advanced”).
+5. **Output Results**: Store grades and categories in the Google Sheet and optionally notify users via email or generate reports.
+6. **Schedule Automation**: Use Google Apps Script triggers to run the categorization script automatically when new responses are submitted.
+
+### Implementation
+
+#### Step 1: Create a Self-Grading Google Form Quiz
+1. **Create a Form**:
+   - Go to [forms.google.com](https://forms.google.com) and click the “+” to start a new form.
+   - Name the form (e.g., “Team Contribution Quiz”).
+2. **Enable Quiz Mode**:
+   - Click the **Settings** tab at the top.
+   - Under the **Quizzes** section, toggle **Make this a quiz** to ON.
+   - Configure settings:
+     - **Release grades**: Choose “Later, after manual review” to control when grades are shared.
+     - **Respondent settings**: Enable “Collect email addresses” to associate responses with users.
+     - Optionally, enable “Show missed questions” or “Show correct answers” for feedback.
+3. **Add Questions**:
+   - Use auto-gradable question types (multiple-choice, checkboxes, dropdowns) for automatic grading.
+   - Example questions:
+     - “How many commits did you make this week?” (Multiple-choice: “0-5”, “6-10”, “11+”)
+     - “Did you submit a pull request?” (Dropdown: “Yes”, “No”)
+   - For each question:
+     - Click **Answer key** (bottom left) to set correct answers and assign point values (e.g., 5 points for “11+ commits”).
+     - Optionally, add feedback for correct/incorrect answers via **Add answer feedback**.
+   - For non-auto-gradable questions (e.g., short answer, paragraph), you’ll grade manually or use the script for custom logic.
+4. **Preview and Share**:
+   - Click the **Preview** (eye icon) to test the form.
+   - Share the form via email, link, or embed it in a website (click **Send**).
+
+#### Step 2: Link Responses to Google Sheets
+1. **Create a Spreadsheet**:
+   - In the Google Form, go to the **Responses** tab.
+   - Click the green **Google Sheets** icon and select **Create a new spreadsheet**.
+   - This creates a linked Google Sheet where each row represents a form response, and columns include timestamp, email, and answers.
+2. **Review Responses**:
+   - The Sheet automatically updates with new responses.
+   - Google Forms auto-grades quiz questions (if answer keys are set) and adds a “Score” column after manual review.
+
+#### Step 3: Automate Grading and Categorization with Google Apps Script
+Below is a Google Apps Script that:
+- Automatically grades non-auto-gradable questions (e.g., short answers with specific keywords).
+- Categorizes responses based on total score or specific answers (e.g., “High Performer” for scores ≥ 80).
+- Updates the Google Sheet with grades and categories.
+- Optionally sends email notifications with results.
+
+```javascript
+function onFormSubmit(e) {
+  // Get the Google Sheet linked to the form
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  var lastRow = sheet.getLastRow();
+  var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  
+  // Get the latest form response (new row)
+  var response = sheet.getRange(lastRow, 1, 1, sheet.getLastColumn()).getValues()[0];
+  
+  // Map headers to response values
+  var responseData = {};
+  headers.forEach((header, index) => {
+    responseData[header] = response[index];
+  });
+  
+  // Example: Grade a short-answer question (e.g., "Describe your contribution")
+  var contributionAnswer = responseData["Describe your contribution"] || "";
+  var contributionScore = 0;
+  if (contributionAnswer.toLowerCase().includes("pull request")) {
+    contributionScore = 10;
+  } else if (contributionAnswer.toLowerCase().includes("commit")) {
+    contributionScore = 5;
+  }
+  
+  // Get auto-graded score from Google Forms (if available)
+  var autoScore = responseData["Score"] ? parseFloat(responseData["Score"].split("/")[0]) : 0;
+  
+  // Calculate total score
+  var totalScore = autoScore + contributionScore;
+  
+  // Categorize based on total score
+  var category = "";
+  if (totalScore >= 80) {
+    category = "High Performer";
+  } else if (totalScore >= 50) {
+    category = "Moderate Performer";
+  } else {
+    category = "Needs Improvement";
+  }
+  
+  // Update the Google Sheet with custom score and category
+  var scoreColumn = headers.indexOf("Custom Score") + 1 || sheet.getLastColumn() + 1;
+  var categoryColumn = headers.indexOf("Category") + 1 || sheet.getLastColumn() + 2;
+  
+  // Set header names if they don't exist
+  if (!headers.includes("Custom Score")) {
+    sheet.getRange(1, scoreColumn).setValue("Custom Score");
+    sheet.getRange(1, categoryColumn).setValue("Category");
+  }
+  
+  // Write score and category to the Sheet
+  sheet.getRange(lastRow, scoreColumn).setValue(totalScore);
+  sheet.getRange(lastRow, categoryColumn).setValue(category);
+  
+  // Optional: Send email notification
+  var email = responseData["Email Address"];
+  if (email) {
+    var subject = "Your Contribution Grade and Category";
+    var message = `Hello,\n\nYour total score is ${totalScore}.\nCategory: ${category}\n\nThank you for your submission!`;
+    MailApp.sendEmail(email, subject, message);
+  }
+}
+
+// Function to set up the trigger
+function setupTrigger() {
+  ScriptApp.newTrigger("onFormSubmit")
+    .forSpreadsheet(SpreadsheetApp.getActiveSpreadsheet())
+    .onFormSubmit()
+    .create();
+}
+```
+
+#### Step 4: Deploy the Script
+1. **Open Google Apps Script**:
+   - In the linked Google Sheet, go to **Extensions** > **Apps Script**.
+   - Delete any default code and paste the script above.
+   - Save the project (e.g., name it “Form Grader”).
+2. **Customize the Script**:
+   - Modify the grading logic (e.g., keywords for `contributionScore`) to match your questions.
+   - Adjust the categorization thresholds (e.g., `totalScore >= 80`) to fit your criteria.
+   - Update column names (e.g., `"Describe your contribution"`) to match your form’s question titles in the Sheet.
+3. **Set Up the Trigger**:
+   - In the Apps Script editor, click **Triggers** (clock icon) on the left.
+   - Click **+ Add Trigger**.
+   - Choose:
+     - Function: `onFormSubmit`
+     - Deployment: `Head`
+     - Event source: `From spreadsheet`
+     - Event type: `On form submit`
+   - Save and authorize the script (grant permissions when prompted).
+4. **Initialize Headers**:
+   - Run the `setupTrigger` function manually once to ensure the “Custom Score” and “Category” columns are added to the Sheet.
+   - To do this, select `setupTrigger` in the editor, click **Run**, and authorize if prompted.
+
+#### Step 5: Test the Automation
+1. **Submit a Test Response**:
+   - Fill out the Google Form with sample answers.
+   - Check the linked Google Sheet to confirm:
+     - Auto-graded scores appear (if quiz questions were used).
+     - The script adds “Custom Score” and “Category” columns with calculated values.
+     - An email is sent (if enabled).
+2. **Debug Issues**:
+   - If the script fails, check the **Executions** log in Apps Script (View > Executions).
+   - Ensure question titles in the script match the Sheet’s column headers exactly.
+
+#### Step 6: Review and Share Results
+1. **Manual Grading (if needed)**:
+   - For non-auto-gradable questions (e.g., paragraph responses), go to the Form’s **Responses** tab.
+   - Click **Individual**, assign points manually, and add feedback.
+   - Click **Save** to update the Sheet.
+2. **Release Grades**:
+   - In the Form’s **Responses** tab, click **Release scores**.
+   - Select respondents and send emails with their scores and feedback.
+3. **Analyze Categories**:
+   - Use the Google Sheet’s “Category” column to sort or filter responses (e.g., view all “High Performers”).
+   - Create charts (Insert > Chart) to visualize category distributions.
+
+#### Step 7: Optional Enhancements
+- **Advanced Categorization**: Add more complex logic in the script, e.g., categorize based on specific answers (e.g., “Yes” to “Did you submit a pull request?” → “Contributor”).
+- **Integration with Zapier**: Automate further actions (e.g., post results to Slack) using Zapier to connect Google Forms to other apps.[](https://zapier.com/apps/google-forms/integrations/one-ai)
+- **Custom Reports**: Use Form Publisher to generate PDF grade reports from responses.[](https://form-publisher.com/blog/how-to-grade-google-forms/)
+- **Timed Quizzes**: Install the ExtendedForms add-on to add timers for controlled assessments.[](https://extendedforms.io/blog/grade-google-forms)
+
+### Example Output in Google Sheet
+| Timestamp | Email Address | How many commits? | Describe your contribution | Score | Custom Score | Category |
+|-----------|---------------|-------------------|---------------------------|-------|--------------|----------|
+| 5/19/2025 9:00 AM | alice@example.com | 11+ | Submitted a pull request | 5/5 | 15 | High Performer |
+| 5/19/2025 9:05 AM | bob@example.com | 0-5 | Made some commits | 2/5 | 7 | Needs Improvement |
+
+### Notes and Considerations
+- **Auto-Grading Limitations**: Google Forms only auto-grades multiple-choice, checkboxes, and dropdown questions. Short-answer questions can be auto-graded with exact matches, but complex responses require manual grading or script-based logic.[](https://developers.google.com/workspace/forms/api/guides/setup-grading)
+- **Script Customization**: Ensure the script’s question titles match the Sheet’s column headers, as they’re case-sensitive.
+- **Permissions**: The script requires permissions to access the Sheet, Form, and Gmail (for emails). Authorize carefully.
+- **Scalability**: For large teams, test the script with a few responses to ensure performance and check Google’s quota limits for Apps Script (e.g., email sending limits).
+- **Privacy**: Inform team members that their responses are being graded and categorized, especially if collecting email addresses.
+- **Alternatives**: If Google Forms lacks features (e.g., advanced question types), consider forms.app or Jotform, which offer more customization and built-in calculators.[](https://forms.app/en/blog/how-to-automatically-calculate-scores-in-google-forms)
+
+### Next Steps
+- Create a test Google Form and Sheet to try the setup.
+- Customize the script’s grading and categorization logic to match your needs.
+- Test with a few submissions to verify the automation.
+- If you need a dashboard or integration with other tools (e.g., Slack, Google Classroom), let me know, and I can provide additional scripts or guidance.
+
+This solution should work for your needs, as it’s flexible and integrates with your existing Google Forms workflow. If you have specific categorization criteria or additional requirements, share them, and I can refine the script further![](https://www.jotform.com/google-forms/how-to-grade-google-forms/)[](https://support.google.com/docs/answer/7032287?hl=en)
